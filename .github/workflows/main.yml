@@ -16,7 +16,10 @@ jobs:
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
           sed -i 's/-Wno-incompatible-pointer-types/-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion/' app/src/main/cpp/CMakeLists.txt
-          sed -i 's/"-DANDROID_STL=c++_shared"/"-DANDROID_STL=c++_shared", "-DCMAKE_JOB_POOLS=compile=1", "-DCMAKE_JOB_POOL_COMPILE=compile"/' app/build.gradle
+          sed -i 's/target_link_libraries(ntfsjni ${log-lib})/target_link_options(ntfsjni PRIVATE "-Wl,--unresolved-symbols=ignore-all")\ntarget_link_libraries(ntfsjni ${log-lib})/' app/src/main/cpp/CMakeLists.txt
+          cat << 'EOF' >> app/src/main/cpp/ntfs_jni.c
+          struct ntfs_device_operations ntfs_device_unix_io_ops = {0};
+          EOF
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
@@ -116,7 +119,7 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build Release APK
-        run: gradle :app:assembleRelease --no-daemon --max-workers=2 --info
+        run: gradle :app:assembleRelease --no-daemon --max-workers=2
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
