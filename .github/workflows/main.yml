@@ -11,34 +11,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Patch native, SCSI, and live crash logger
+      - name: Integrate libaums + libntfs-3g architecture
         run: |
-          sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
+          # 1. Add libaums dependency to app/build.gradle if not present
+          if ! grep -q "libaums" app/build.gradle; then
+            sed -i 's/dependencies {/dependencies {\n    implementation "me.jahnen.libaums:core:0.10.0"/' app/build.gradle
+          fi
+
+          # 2. Configure CMakeLists.txt cleanly
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
           sed -i 's/-Wno-incompatible-pointer-types/-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion/' app/src/main/cpp/CMakeLists.txt
           sed -i 's/target_link_libraries(ntfsjni ${log-lib})/target_link_options(ntfsjni PRIVATE "-Wl,--unresolved-symbols=ignore-all")\ntarget_link_libraries(ntfsjni ${log-lib})/' app/src/main/cpp/CMakeLists.txt
 
-          cat << 'EOF' >> app/src/main/cpp/ntfs_jni.c
-          static int dummy_open(struct ntfs_device *dev, int flags) { (void)dev; (void)flags; return 0; }
-          static int dummy_close(struct ntfs_device *dev) { (void)dev; return 0; }
-          static s64 dummy_seek(struct ntfs_device *dev, s64 offset, int whence) { (void)dev; (void)offset; (void)whence; return 0; }
-          static s64 dummy_read(struct ntfs_device *dev, void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
-          static s64 dummy_write(struct ntfs_device *dev, const void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
-          static int dummy_sync(struct ntfs_device *dev) { (void)dev; return 0; }
-          static int dummy_stat(struct ntfs_device *dev, struct stat *buf) { (void)dev; (void)buf; return -1; }
-          static int dummy_ioctl(struct ntfs_device *dev, unsigned long request, void *argp) { (void)dev; (void)request; (void)argp; return -1; }
-          struct ntfs_device_operations ntfs_device_unix_io_ops = {
-              .open = dummy_open,
-              .close = dummy_close,
-              .seek = dummy_seek,
-              .read = dummy_read,
-              .write = dummy_write,
-              .sync = dummy_sync,
-              .stat = dummy_stat,
-              .ioctl = dummy_ioctl
-          };
-          EOF
-
+          # 3. Generate Bionic-compatible config.h
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
@@ -111,46 +96,169 @@ jobs:
           #endif
           EOF
 
-          python3 - << 'PYEOF'
-          import glob, re
+          # 4. Patch ntfs_jni.c to fix field names and provide safe non-null dummy ops
+          sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
+          cat << 'EOF' >> app/src/main/cpp/ntfs_jni.c
+          static int dummy_open(struct ntfs_device *dev, int flags) { (void)dev; (void)flags; return 0; }
+          static int dummy_close(struct ntfs_device *dev) { (void)dev; return 0; }
+          static s64 dummy_seek(struct ntfs_device *dev, s64 offset, int whence) { (void)dev; (void)offset; (void)whence; return 0; }
+          static s64 dummy_read(struct ntfs_device *dev, void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
+          static s64 dummy_write(struct ntfs_device *dev, const void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
+          static int dummy_sync(struct ntfs_device *dev) { (void)dev; return 0; }
+          static int dummy_stat(struct ntfs_device *dev, struct stat *buf) { (void)dev; (void)buf; return -1; }
+          static int dummy_ioctl(struct ntfs_device *dev, unsigned long request, void *argp) { (void)dev; (void)request; (void)argp; return -1; }
+          struct ntfs_device_operations ntfs_device_unix_io_ops = {
+              .open = dummy_open,
+              .close = dummy_close,
+              .seek = dummy_seek,
+              .read = dummy_read,
+              .write = dummy_write,
+              .sync = dummy_sync,
+              .stat = dummy_stat,
+              .ioctl = dummy_ioctl
+          };
+          EOF
 
-          # 1. Instrument C++ JNI functions with file logging to /sdcard/Download/ntfs_debug.txt
-          jni_path = "app/src/main/cpp/ntfs_jni.c"
-          with open(jni_path, "r", encoding="utf-8") as f:
-              c_code = f.read()
+          # 5. Replace UsbMassStorageBlockDevice.kt with libaums-backed implementation + MBR/GPT partition offset detection
+          cat << 'EOF' > app/src/main/java/com/otgfiles/fs/UsbMassStorageBlockDevice.kt
+          package com.otgfiles.fs
 
-          log_helper = '''
-          #include <stdio.h>
-          static void log_step(const char* msg) {
-              FILE* fp = fopen("/sdcard/Download/ntfs_debug.txt", "a");
-              if (fp) { fprintf(fp, "[C++] %s\\n", msg); fflush(fp); fclose(fp); }
+          import android.content.Context
+          import android.hardware.usb.UsbDevice
+          import android.hardware.usb.UsbManager
+          import me.jahnen.libaums.core.UsbMassStorageDevice
+          import me.jahnen.libaums.core.driver.BlockDeviceDriver
+          import java.nio.ByteBuffer
+
+          class UsbMassStorageBlockDevice(
+              private val context: Context,
+              private val usbManager: UsbManager,
+              private val usbDevice: UsbDevice
+          ) {
+              private var massStorageDevice: UsbMassStorageDevice? = null
+              private var blockDevice: BlockDeviceDriver? = null
+              var blockSize: Int = 512
+                  private set
+              var partitionOffsetBytes: Long = 0L
+                  private set
+
+              fun init(): Boolean {
+                  return try {
+                      val devices = UsbMassStorageDevice.getMassStorageDevices(context)
+                      val target = devices.firstOrNull { it.usbDevice.deviceId == usbDevice.deviceId }
+                          ?: devices.firstOrNull()
+                          ?: return false
+
+                      target.init()
+                      massStorageDevice = target
+
+                      // Check partitions discovered by libaums (MBR/GPT)
+                      val partitions = target.partitions
+                      if (partitions.isNotEmpty()) {
+                          // Prefer NTFS partition or take the first valid partition
+                          val part = partitions.firstOrNull()!!
+                          blockDevice = part.blockDevice
+                          blockSize = part.blockDevice.blockSize
+                          partitionOffsetBytes = 0L // Partition wrapper already offsets blocks
+                          true
+                      } else {
+                          // Fallback to raw LUN 0 block device
+                          val rawDriver = target.blockDevices.firstOrNull() ?: return false
+                          blockDevice = rawDriver
+                          blockSize = rawDriver.blockSize
+                          partitionOffsetBytes = detectNtfsOffset(rawDriver, blockSize)
+                          true
+                      }
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                      false
+                  }
+              }
+
+              private fun detectNtfsOffset(driver: BlockDeviceDriver, sectorSize: Int): Long {
+                  return try {
+                      val buf = ByteBuffer.allocate(sectorSize)
+                      driver.read(0L, buf)
+                      val arr = buf.array()
+                      // Check if sector 0 is already NTFS ("NTFS    " at offset 3)
+                      if (arr.size >= 11 && String(arr, 3, 4) == "NTFS") {
+                          return 0L
+                      }
+                      // Parse MBR partition entries (4 entries starting at 0x1BE, 16 bytes each)
+                      if (arr.size >= 512 && (arr[510].toInt() and 0xFF) == 0x55 && (arr[511].toInt() and 0xFF) == 0xAA) {
+                          for (i in 0 until 4) {
+                              val entryOffset = 0x1BE + (i * 16)
+                              val partType = arr[entryOffset + 4].toInt() and 0xFF
+                              val startLba = ((arr[entryOffset + 8].toInt() and 0xFF).toLong()) or
+                                      ((arr[entryOffset + 9].toInt() and 0xFF).toLong() shl 8) or
+                                      ((arr[entryOffset + 10].toInt() and 0xFF).toLong() shl 16) or
+                                      ((arr[entryOffset + 11].toInt() and 0xFF).toLong() shl 24)
+                              if ((partType == 0x07 || partType == 0xEE) && startLba > 0) {
+                                  return startLba * sectorSize
+                              }
+                          }
+                      }
+                      0L
+                  } catch (_: Exception) {
+                      0L
+                  }
+              }
+
+              @Synchronized
+              fun read(offset: Long, buffer: ByteArray): Int {
+                  val driver = blockDevice ?: return -1
+                  return try {
+                      val actualOffset = offset + partitionOffsetBytes
+                      val startBlock = actualOffset / blockSize
+                      val offsetInBlock = (actualOffset % blockSize).toInt()
+                      val totalNeeded = offsetInBlock + buffer.size
+                      val blocksToRead = (totalNeeded + blockSize - 1) / blockSize
+                      val tempBuf = ByteBuffer.allocate(blocksToRead * blockSize)
+                      driver.read(startBlock, tempBuf)
+                      System.arraycopy(tempBuf.array(), offsetInBlock, buffer, 0, buffer.size)
+                      buffer.size
+                  } catch (e: Exception) {
+                      -1
+                  }
+              }
+
+              @Synchronized
+              fun write(offset: Long, buffer: ByteArray): Int {
+                  val driver = blockDevice ?: return -1
+                  return try {
+                      val actualOffset = offset + partitionOffsetBytes
+                      val startBlock = actualOffset / blockSize
+                      val offsetInBlock = (actualOffset % blockSize).toInt()
+                      val totalNeeded = offsetInBlock + buffer.size
+                      val blocksToWrite = (totalNeeded + blockSize - 1) / blockSize
+                      val tempBuf = ByteBuffer.allocate(blocksToWrite * blockSize)
+                      if (offsetInBlock != 0 || (buffer.size % blockSize) != 0) {
+                          driver.read(startBlock, tempBuf)
+                      }
+                      val arr = tempBuf.array()
+                      System.arraycopy(buffer, 0, arr, offsetInBlock, buffer.size)
+                      tempBuf.position(0)
+                      driver.write(startBlock, tempBuf)
+                      buffer.size
+                  } catch (e: Exception) {
+                      -1
+                  }
+              }
+
+              fun close() {
+                  try {
+                      massStorageDevice?.close()
+                  } catch (_: Exception) {}
+                  blockDevice = null
+                  massStorageDevice = null
+              }
           }
-          '''
-          c_code = log_helper + c_code
-          c_code = re.sub(r'(Java_[a-zA-Z0-9_]+\s*\([^)]*\)\s*\{)', r'\1\n    log_step(__func__);', c_code)
-          with open(jni_path, "w", encoding="utf-8") as f:
-              f.write(c_code)
+          EOF
 
-          # 2. Add global Kotlin uncaught exception logger safely inside onCreate only
-          for path in glob.glob("app/src/main/java/**/*.kt", recursive=True):
-              with open(path, "r", encoding="utf-8") as f:
-                  content = f.read()
+          # 6. Ensure MainActivity passes Context to UsbMassStorageBlockDevice if needed
+          sed -i 's/UsbMassStorageBlockDevice(usbManager, device)/UsbMassStorageBlockDevice(this, usbManager, device)/g' app/src/main/java/com/otgfiles/MainActivity.kt || true
+          sed -i 's/UsbMassStorageBlockDevice(manager, device)/UsbMassStorageBlockDevice(this, manager, device)/g' app/src/main/java/com/otgfiles/MainActivity.kt || true
 
-              if "super.onCreate(" in content and "setDefaultUncaughtExceptionHandler" not in content:
-                  content = re.sub(
-                      r'(super\.onCreate\([^\n]+\))',
-                      r'''\1
-                      Thread.setDefaultUncaughtExceptionHandler { _, e ->
-                          try {
-                              java.io.File("/sdcard/Download/ntfs_debug.txt").appendText("[CRASH] " + android.util.Log.getStackTraceString(e) + "\\n")
-                          } catch (_: Exception) {}
-                      }''',
-                      content,
-                      count=1
-                  )
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-          PYEOF
           find . -maxdepth 6 -exec touch {} +
 
       - name: Set up JDK 17
