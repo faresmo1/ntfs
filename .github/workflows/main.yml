@@ -131,14 +131,14 @@ jobs:
           with open(jni_path, "w", encoding="utf-8") as f:
               f.write(c_code)
 
-          # 2. Instrument Kotlin files with file logging & uncaught exception handler
+          # 2. Add global Kotlin uncaught exception logger safely inside onCreate only
           for path in glob.glob("app/src/main/java/**/*.kt", recursive=True):
               with open(path, "r", encoding="utf-8") as f:
                   content = f.read()
 
-              if "onCreate(" in content and "setDefaultUncaughtExceptionHandler" not in content:
+              if "super.onCreate(" in content and "setDefaultUncaughtExceptionHandler" not in content:
                   content = re.sub(
-                      r'(super\.onCreate\([^)]*\))',
+                      r'(super\.onCreate\([^\n]+\))',
                       r'''\1
                       Thread.setDefaultUncaughtExceptionHandler { _, e ->
                           try {
@@ -148,16 +148,8 @@ jobs:
                       content,
                       count=1
                   )
-
-              # Log before every native/JNI call or mount step
-              content = re.sub(
-                  r'(\bmount[a-zA-Z0-9_]*\s*\()',
-                  r'run { try { java.io.File("/sdcard/Download/ntfs_debug.txt").appendText("[KT] calling mount\\n") } catch (_: Exception) {} }; \1',
-                  content
-              )
-
-              with open(path, "w", encoding="utf-8") as f:
-                  f.write(content)
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
           PYEOF
           find . -maxdepth 6 -exec touch {} +
 
