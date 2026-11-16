@@ -15,6 +15,7 @@ jobs:
         run: |
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
+          sed -i 's/#endif/#define MAJOR_IN_SYSMACROS 1\n#endif/' app/src/main/cpp/config.h
           find . -maxdepth 5 -exec touch {} +
 
       - name: Set up JDK 17
@@ -43,7 +44,7 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build Release APK
-        run: gradle :app:assembleRelease --no-daemon --max-workers=2 --info
+        run: gradle :app:assembleRelease --no-daemon --max-workers=2
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
