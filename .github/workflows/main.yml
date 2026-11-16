@@ -94,49 +94,39 @@ jobs:
           python3 - << 'PYEOF'
           import glob, re
 
-          for path in glob.glob("app/src/main/java/**/*.*", recursive=True):
-              if not (path.endswith(".kt") or path.endswith(".java")):
-                  continue
+          for path in glob.glob("app/src/main/java/**/*.kt", recursive=True):
               with open(path, "r", encoding="utf-8") as f:
-                  content = f.read()
-              orig = content
+                  lines = f.readlines()
 
-              # Increase USB bulk transfer timeouts from small values to 5000ms
-              content = re.sub(r'bulkTransfer\(([^,]+),\s*([^,]+),\s*([^,]+),\s*\d+\)', r'bulkTransfer(\1, \2, \3, 5000)', content)
+              new_lines = []
+              changed = False
+              for line in lines:
+                  # Increase bulkTransfer timeout safely
+                  updated = re.sub(r'(bulkTransfer\s*\([^;]+,\s*)(\d+)(\s*\))', r'\g<1>5000\g<3>', line)
+                  if updated != line:
+                      changed = True
+                  new_lines.append(updated)
 
-              # Add USB Mass Storage Bulk-Only Reset + delay right after claimInterface
-              if "claimInterface" in content and "0x21" not in content:
-                  if path.endswith(".kt"):
-                      content = re.sub(
-                          r'(claimInterface\([^)]+\))',
-                          r'\1\n        try { connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2000); Thread.sleep(250) } catch (_: Exception) {}',
-                          content,
-                          count=1
-                      )
-                  else:
-                      content = re.sub(
-                          r'(claimInterface\([^;]+;)',
-                          r'\1\n        try { connection.controlTransfer(0x21, 0xFF, 0, usbInterface.getId(), null, 0, 2000); Thread.sleep(250); } catch (Exception ignored) {}',
-                          content,
-                          count=1
-                      )
+                  # Add USB Mass Storage Bulk-Only Reset on the next line after claimInterface
+                  if "claimInterface(" in updated and "controlTransfer" not in updated:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      new_lines.append(f"{indent}try {{ connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2000); Thread.sleep(250) }} catch (_: Exception) {{}}\n")
+                      changed = True
 
-              # Wrap init() call with 5 retries so Unit Attention / cold-start drives initialize cleanly
+              content = "".join(new_lines)
+
+              # Add 5-attempt retry around blockDevice.init()
               if "SCSI Init failed" in content:
-                  if path.endswith(".kt"):
-                      content = re.sub(
-                          r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
-                          r'var initOk = false; for (attempt in 1..5) { if (\1.init()) { initOk = true; break }; Thread.sleep(250) }; if (!initOk)',
-                          content
-                      )
-                  else:
-                      content = re.sub(
-                          r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
-                          r'boolean initOk = false; for (int attempt = 0; attempt < 5; attempt++) { if (\1.init()) { initOk = true; break; } try { Thread.sleep(250); } catch (InterruptedException ignored) {} } if (!initOk)',
-                          content
-                      )
+                  content2 = re.sub(
+                      r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
+                      r'var initOk = false; for (attempt in 1..5) { if (\1.init()) { initOk = true; break }; Thread.sleep(250) }; if (!initOk)',
+                      content
+                  )
+                  if content2 != content:
+                      content = content2
+                      changed = True
 
-              if content != orig:
+              if changed:
                   with open(path, "w", encoding="utf-8") as f:
                       f.write(content)
                   print("Patched:", path)
