@@ -1,0 +1,41 @@
+#ifndef NTFS_CONFIG_H
+#define NTFS_CONFIG_H
+
+#define HAVE_STDINT_H 1
+#define HAVE_STDLIB_H 1
+#define HAVE_STRING_H 1
+#define HAVE_STRINGS_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_FCNTL_H 1
+#define HAVE_ERRNO_H 1
+#define HAVE_TIME_H 1
+#define HAVE_SYS_STAT_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_LIMITS_H 1
+#define HAVE_STDARG_H 1
+#define HAVE_STDDEF_H 1
+#define HAVE_CTYPE_H 1
+#define HAVE_LOCALE_H 1
+#define HAVE_WCHAR_H 1
+#define HAVE_ENDIAN_H 1
+#define HAVE_SYS_ENDIAN_H 1
+#define HAVE_BYTESWAP_H 1
+#define HAVE_STRNLEN 1
+#define HAVE_STRDUP 1
+#define HAVE_STRNDUP 1
+#define HAVE_STRSEP 1
+#define HAVE_MEMMOVE 1
+#define HAVE_MEMSET 1
+#define HAVE_MEMCPY 1
+#define HAVE_SNPRINTF 1
+#define HAVE_VSNPRINTF 1
+#define HAVE_GETTIMEOFDAY 1
+#define HAVE_CLOCK_GETTIME 1
+#define HAVE_SETLOCALE 1
+#define HAVE_MBSINIT 1
+#define HAVE_MBRTOWC 1
+#define HAVE_WCRTOMB 1
+#define PACKAGE_VERSION "2022.10.3"
+#define VERSION "2022.10.3"
+
+#endif
