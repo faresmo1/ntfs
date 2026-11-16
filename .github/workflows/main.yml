@@ -11,7 +11,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Integrate libaums + libntfs-3g architecture
+      - name: Fix method signatures and build APK
         run: |
           if ! grep -q "libaums" app/build.gradle; then
             sed -i 's/dependencies {/dependencies {\n    implementation "me.jahnen.libaums:core:0.10.0"/' app/build.gradle
@@ -176,6 +176,16 @@ jobs:
               }
 
               @Synchronized
+              fun readSectors(lba: Long, count: Int, dest: ByteArray): Boolean {
+                  val res = readSectors(lba, count) ?: return false
+                  if (res.size <= dest.size) {
+                      System.arraycopy(res, 0, dest, 0, res.size)
+                      return true
+                  }
+                  return false
+              }
+
+              @Synchronized
               fun writeSectors(lba: Long, data: ByteArray): Boolean {
                   val driver = blockDevice ?: return false
                   return try {
@@ -185,6 +195,11 @@ jobs:
                   } catch (e: Exception) {
                       false
                   }
+              }
+
+              @Synchronized
+              fun writeSectors(lba: Long, count: Int, data: ByteArray): Boolean {
+                  return writeSectors(lba, data)
               }
 
               @Synchronized
