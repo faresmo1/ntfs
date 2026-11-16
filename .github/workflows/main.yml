@@ -11,7 +11,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Patch source automatically
+      - name: Patch native and SCSI initialization automatically
         run: |
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
@@ -91,7 +91,57 @@ jobs:
           #define VERSION "2022.10.3"
           #endif
           EOF
-          find . -maxdepth 5 -exec touch {} +
+          python3 - << 'PYEOF'
+          import glob, re
+
+          for path in glob.glob("app/src/main/java/**/*.*", recursive=True):
+              if not (path.endswith(".kt") or path.endswith(".java")):
+                  continue
+              with open(path, "r", encoding="utf-8") as f:
+                  content = f.read()
+              orig = content
+
+              # Increase USB bulk transfer timeouts from small values to 5000ms
+              content = re.sub(r'bulkTransfer\(([^,]+),\s*([^,]+),\s*([^,]+),\s*\d+\)', r'bulkTransfer(\1, \2, \3, 5000)', content)
+
+              # Add USB Mass Storage Bulk-Only Reset + delay right after claimInterface
+              if "claimInterface" in content and "0x21" not in content:
+                  if path.endswith(".kt"):
+                      content = re.sub(
+                          r'(claimInterface\([^)]+\))',
+                          r'\1\n        try { connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2000); Thread.sleep(250) } catch (_: Exception) {}',
+                          content,
+                          count=1
+                      )
+                  else:
+                      content = re.sub(
+                          r'(claimInterface\([^;]+;)',
+                          r'\1\n        try { connection.controlTransfer(0x21, 0xFF, 0, usbInterface.getId(), null, 0, 2000); Thread.sleep(250); } catch (Exception ignored) {}',
+                          content,
+                          count=1
+                      )
+
+              # Wrap init() call with 5 retries so Unit Attention / cold-start drives initialize cleanly
+              if "SCSI Init failed" in content:
+                  if path.endswith(".kt"):
+                      content = re.sub(
+                          r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
+                          r'var initOk = false; for (attempt in 1..5) { if (\1.init()) { initOk = true; break }; Thread.sleep(250) }; if (!initOk)',
+                          content
+                      )
+                  else:
+                      content = re.sub(
+                          r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
+                          r'boolean initOk = false; for (int attempt = 0; attempt < 5; attempt++) { if (\1.init()) { initOk = true; break; } try { Thread.sleep(250); } catch (InterruptedException ignored) {} } if (!initOk)',
+                          content
+                      )
+
+              if content != orig:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print("Patched:", path)
+          PYEOF
+          find . -maxdepth 6 -exec touch {} +
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
