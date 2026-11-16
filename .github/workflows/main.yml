@@ -16,7 +16,6 @@ jobs:
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
           sed -i 's/-Wno-incompatible-pointer-types/-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion/' app/src/main/cpp/CMakeLists.txt
-          sed -i 's/"-DANDROID_STL=c++_shared"/"-DANDROID_STL=c++_shared", "-DCMAKE_JOB_POOLS=compile=1", "-DCMAKE_JOB_POOL_COMPILE=compile"/' app/build.gradle
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
@@ -37,6 +36,8 @@ jobs:
           #define HAVE_SYS_IOCTL_H 1
           #define HAVE_SYS_SYSMACROS_H 1
           #define MAJOR_IN_SYSMACROS 1
+          #define HAVE_LINUX_HDREG_H 1
+          #define HAVE_LINUX_FD_H 1
           #define HAVE_LIMITS_H 1
           #define HAVE_STDARG_H 1
           #define HAVE_STDDEF_H 1
@@ -104,7 +105,7 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build Release APK
-        run: gradle :app:assembleRelease --no-daemon --max-workers=2 --info
+        run: gradle :app:assembleRelease --no-daemon --max-workers=2
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
