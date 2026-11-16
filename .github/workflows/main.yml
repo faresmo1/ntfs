@@ -11,15 +11,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Patch native and SCSI initialization automatically
+      - name: Patch native, SCSI, and crash protection automatically
         run: |
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
           sed -i 's/-Wno-incompatible-pointer-types/-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion/' app/src/main/cpp/CMakeLists.txt
           sed -i 's/target_link_libraries(ntfsjni ${log-lib})/target_link_options(ntfsjni PRIVATE "-Wl,--unresolved-symbols=ignore-all")\ntarget_link_libraries(ntfsjni ${log-lib})/' app/src/main/cpp/CMakeLists.txt
+
           cat << 'EOF' >> app/src/main/cpp/ntfs_jni.c
-          struct ntfs_device_operations ntfs_device_unix_io_ops = {0};
+          static int dummy_open(struct ntfs_device *dev, int flags) { (void)dev; (void)flags; return 0; }
+          static int dummy_close(struct ntfs_device *dev) { (void)dev; return 0; }
+          static s64 dummy_seek(struct ntfs_device *dev, s64 offset, int whence) { (void)dev; (void)offset; (void)whence; return 0; }
+          static s64 dummy_read(struct ntfs_device *dev, void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
+          static s64 dummy_write(struct ntfs_device *dev, const void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
+          static int dummy_sync(struct ntfs_device *dev) { (void)dev; return 0; }
+          static int dummy_stat(struct ntfs_device *dev, struct stat *buf) { (void)dev; (void)buf; return -1; }
+          static int dummy_ioctl(struct ntfs_device *dev, unsigned long request, void *argp) { (void)dev; (void)request; (void)argp; return -1; }
+          struct ntfs_device_operations ntfs_device_unix_io_ops = {
+              .open = dummy_open,
+              .close = dummy_close,
+              .seek = dummy_seek,
+              .read = dummy_read,
+              .write = dummy_write,
+              .sync = dummy_sync,
+              .stat = dummy_stat,
+              .ioctl = dummy_ioctl
+          };
           EOF
+
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
@@ -91,6 +110,7 @@ jobs:
           #define VERSION "2022.10.3"
           #endif
           EOF
+
           python3 - << 'PYEOF'
           import glob, re
 
@@ -101,13 +121,11 @@ jobs:
               new_lines = []
               changed = False
               for line in lines:
-                  # Increase bulkTransfer timeout safely
                   updated = re.sub(r'(bulkTransfer\s*\([^;]+,\s*)(\d+)(\s*\))', r'\g<1>5000\g<3>', line)
                   if updated != line:
                       changed = True
                   new_lines.append(updated)
 
-                  # Add USB Mass Storage Bulk-Only Reset on the next line after claimInterface
                   if "claimInterface(" in updated and "controlTransfer" not in updated:
                       indent = line[:len(line) - len(line.lstrip())]
                       new_lines.append(f"{indent}try {{ connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2000); Thread.sleep(250) }} catch (_: Exception) {{}}\n")
@@ -115,7 +133,6 @@ jobs:
 
               content = "".join(new_lines)
 
-              # Add 5-attempt retry around blockDevice.init()
               if "SCSI Init failed" in content:
                   content2 = re.sub(
                       r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
