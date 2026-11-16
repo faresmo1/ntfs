@@ -11,7 +11,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Patch native, SCSI, and crash protection automatically
+      - name: Patch native, SCSI, and live crash logger
         run: |
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
@@ -114,39 +114,50 @@ jobs:
           python3 - << 'PYEOF'
           import glob, re
 
+          # 1. Instrument C++ JNI functions with file logging to /sdcard/Download/ntfs_debug.txt
+          jni_path = "app/src/main/cpp/ntfs_jni.c"
+          with open(jni_path, "r", encoding="utf-8") as f:
+              c_code = f.read()
+
+          log_helper = '''
+          #include <stdio.h>
+          static void log_step(const char* msg) {
+              FILE* fp = fopen("/sdcard/Download/ntfs_debug.txt", "a");
+              if (fp) { fprintf(fp, "[C++] %s\\n", msg); fflush(fp); fclose(fp); }
+          }
+          '''
+          c_code = log_helper + c_code
+          c_code = re.sub(r'(Java_[a-zA-Z0-9_]+\s*\([^)]*\)\s*\{)', r'\1\n    log_step(__func__);', c_code)
+          with open(jni_path, "w", encoding="utf-8") as f:
+              f.write(c_code)
+
+          # 2. Instrument Kotlin files with file logging & uncaught exception handler
           for path in glob.glob("app/src/main/java/**/*.kt", recursive=True):
               with open(path, "r", encoding="utf-8") as f:
-                  lines = f.readlines()
+                  content = f.read()
 
-              new_lines = []
-              changed = False
-              for line in lines:
-                  updated = re.sub(r'(bulkTransfer\s*\([^;]+,\s*)(\d+)(\s*\))', r'\g<1>5000\g<3>', line)
-                  if updated != line:
-                      changed = True
-                  new_lines.append(updated)
-
-                  if "claimInterface(" in updated and "controlTransfer" not in updated:
-                      indent = line[:len(line) - len(line.lstrip())]
-                      new_lines.append(f"{indent}try {{ connection.controlTransfer(0x21, 0xFF, 0, usbInterface.id, null, 0, 2000); Thread.sleep(250) }} catch (_: Exception) {{}}\n")
-                      changed = True
-
-              content = "".join(new_lines)
-
-              if "SCSI Init failed" in content:
-                  content2 = re.sub(
-                      r'if\s*\(\s*!([a-zA-Z0-9_.]+)\.init\(\)\s*\)',
-                      r'var initOk = false; for (attempt in 1..5) { if (\1.init()) { initOk = true; break }; Thread.sleep(250) }; if (!initOk)',
-                      content
+              if "onCreate(" in content and "setDefaultUncaughtExceptionHandler" not in content:
+                  content = re.sub(
+                      r'(super\.onCreate\([^)]*\))',
+                      r'''\1
+                      Thread.setDefaultUncaughtExceptionHandler { _, e ->
+                          try {
+                              java.io.File("/sdcard/Download/ntfs_debug.txt").appendText("[CRASH] " + android.util.Log.getStackTraceString(e) + "\\n")
+                          } catch (_: Exception) {}
+                      }''',
+                      content,
+                      count=1
                   )
-                  if content2 != content:
-                      content = content2
-                      changed = True
 
-              if changed:
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-                  print("Patched:", path)
+              # Log before every native/JNI call or mount step
+              content = re.sub(
+                  r'(\bmount[a-zA-Z0-9_]*\s*\()',
+                  r'run { try { java.io.File("/sdcard/Download/ntfs_debug.txt").appendText("[KT] calling mount\\n") } catch (_: Exception) {} }; \1',
+                  content
+              )
+
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(content)
           PYEOF
           find . -maxdepth 6 -exec touch {} +
 
