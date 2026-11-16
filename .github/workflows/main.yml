@@ -16,6 +16,7 @@ jobs:
           sed -i 's/nr_free_clusters/free_clusters/g' app/src/main/cpp/ntfs_jni.c
           sed -i 's/unix_io|win32_io/unix_io|win32_io|acls|xattrs|object_id|reparse|efs/g' app/src/main/cpp/CMakeLists.txt
           sed -i 's/-Wno-incompatible-pointer-types/-Wno-incompatible-pointer-types -Wno-implicit-function-declaration -Wno-int-conversion/' app/src/main/cpp/CMakeLists.txt
+          sed -i 's/cmake {/cmake {\n                arguments "-DANDROID_STL=c++_shared", "-DCMAKE_VERBOSE_MAKEFILE=ON"\n                buildFlags "-j1"/' app/build.gradle
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
