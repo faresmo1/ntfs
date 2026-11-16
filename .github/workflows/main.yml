@@ -119,7 +119,7 @@ jobs:
           };
           EOF
 
-          # 5. Replace UsbMassStorageBlockDevice.kt with libaums-backed implementation + MBR/GPT partition offset detection
+          # 5. Replace UsbMassStorageBlockDevice.kt with libaums 0.10.0 API + readSectors/writeSectors
           cat << 'EOF' > app/src/main/java/com/otgfiles/fs/UsbMassStorageBlockDevice.kt
           package com.otgfiles.fs
 
@@ -152,22 +152,15 @@ jobs:
                       target.init()
                       massStorageDevice = target
 
-                      // Check partitions discovered by libaums (MBR/GPT)
                       val partitions = target.partitions
                       if (partitions.isNotEmpty()) {
-                          // Prefer NTFS partition or take the first valid partition
-                          val part = partitions.firstOrNull()!!
-                          blockDevice = part.blockDevice
-                          blockSize = part.blockDevice.blockSize
-                          partitionOffsetBytes = 0L // Partition wrapper already offsets blocks
+                          val part = partitions.first()
+                          blockDevice = part
+                          blockSize = part.blockSize
+                          partitionOffsetBytes = 0L
                           true
                       } else {
-                          // Fallback to raw LUN 0 block device
-                          val rawDriver = target.blockDevices.firstOrNull() ?: return false
-                          blockDevice = rawDriver
-                          blockSize = rawDriver.blockSize
-                          partitionOffsetBytes = detectNtfsOffset(rawDriver, blockSize)
-                          true
+                          false
                       }
                   } catch (e: Exception) {
                       e.printStackTrace()
@@ -175,122 +168,30 @@ jobs:
                   }
               }
 
-              private fun detectNtfsOffset(driver: BlockDeviceDriver, sectorSize: Int): Long {
+              @Synchronized
+              fun readSectors(lba: Long, count: Int): ByteArray? {
+                  val driver = blockDevice ?: return null
                   return try {
-                      val buf = ByteBuffer.allocate(sectorSize)
-                      driver.read(0L, buf)
-                      val arr = buf.array()
-                      // Check if sector 0 is already NTFS ("NTFS    " at offset 3)
-                      if (arr.size >= 11 && String(arr, 3, 4) == "NTFS") {
-                          return 0L
-                      }
-                      // Parse MBR partition entries (4 entries starting at 0x1BE, 16 bytes each)
-                      if (arr.size >= 512 && (arr[510].toInt() and 0xFF) == 0x55 && (arr[511].toInt() and 0xFF) == 0xAA) {
-                          for (i in 0 until 4) {
-                              val entryOffset = 0x1BE + (i * 16)
-                              val partType = arr[entryOffset + 4].toInt() and 0xFF
-                              val startLba = ((arr[entryOffset + 8].toInt() and 0xFF).toLong()) or
-                                      ((arr[entryOffset + 9].toInt() and 0xFF).toLong() shl 8) or
-                                      ((arr[entryOffset + 10].toInt() and 0xFF).toLong() shl 16) or
-                                      ((arr[entryOffset + 11].toInt() and 0xFF).toLong() shl 24)
-                              if ((partType == 0x07 || partType == 0xEE) && startLba > 0) {
-                                  return startLba * sectorSize
-                              }
-                          }
-                      }
-                      0L
-                  } catch (_: Exception) {
-                      0L
+                      val buf = ByteBuffer.allocate(count * blockSize)
+                      driver.read(lba, buf)
+                      buf.array()
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+
+              @Synchronized
+              fun writeSectors(lba: Long, data: ByteArray): Boolean {
+                  val driver = blockDevice ?: return false
+                  return try {
+                      val buf = ByteBuffer.wrap(data)
+                      driver.write(lba, buf)
+                      true
+                  } catch (e: Exception) {
+                      false
                   }
               }
 
               @Synchronized
               fun read(offset: Long, buffer: ByteArray): Int {
-                  val driver = blockDevice ?: return -1
-                  return try {
-                      val actualOffset = offset + partitionOffsetBytes
-                      val startBlock = actualOffset / blockSize
-                      val offsetInBlock = (actualOffset % blockSize).toInt()
-                      val totalNeeded = offsetInBlock + buffer.size
-                      val blocksToRead = (totalNeeded + blockSize - 1) / blockSize
-                      val tempBuf = ByteBuffer.allocate(blocksToRead * blockSize)
-                      driver.read(startBlock, tempBuf)
-                      System.arraycopy(tempBuf.array(), offsetInBlock, buffer, 0, buffer.size)
-                      buffer.size
-                  } catch (e: Exception) {
-                      -1
-                  }
-              }
-
-              @Synchronized
-              fun write(offset: Long, buffer: ByteArray): Int {
-                  val driver = blockDevice ?: return -1
-                  return try {
-                      val actualOffset = offset + partitionOffsetBytes
-                      val startBlock = actualOffset / blockSize
-                      val offsetInBlock = (actualOffset % blockSize).toInt()
-                      val totalNeeded = offsetInBlock + buffer.size
-                      val blocksToWrite = (totalNeeded + blockSize - 1) / blockSize
-                      val tempBuf = ByteBuffer.allocate(blocksToWrite * blockSize)
-                      if (offsetInBlock != 0 || (buffer.size % blockSize) != 0) {
-                          driver.read(startBlock, tempBuf)
-                      }
-                      val arr = tempBuf.array()
-                      System.arraycopy(buffer, 0, arr, offsetInBlock, buffer.size)
-                      tempBuf.position(0)
-                      driver.write(startBlock, tempBuf)
-                      buffer.size
-                  } catch (e: Exception) {
-                      -1
-                  }
-              }
-
-              fun close() {
-                  try {
-                      massStorageDevice?.close()
-                  } catch (_: Exception) {}
-                  blockDevice = null
-                  massStorageDevice = null
-              }
-          }
-          EOF
-
-          # 6. Ensure MainActivity passes Context to UsbMassStorageBlockDevice if needed
-          sed -i 's/UsbMassStorageBlockDevice(usbManager, device)/UsbMassStorageBlockDevice(this, usbManager, device)/g' app/src/main/java/com/otgfiles/MainActivity.kt || true
-          sed -i 's/UsbMassStorageBlockDevice(manager, device)/UsbMassStorageBlockDevice(this, manager, device)/g' app/src/main/java/com/otgfiles/MainActivity.kt || true
-
-          find . -maxdepth 6 -exec touch {} +
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Install Android SDK components
-        run: |
-          export ANDROID_HOME="/usr/local/lib/android/sdk"
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
-
-      - name: Fetch ntfs-3g source
-        run: |
-          mkdir -p app/src/main/cpp/ntfs-3g-src
-          curl -L https://github.com/tuxera/ntfs-3g/archive/refs/tags/2022.10.3.tar.gz -o ntfs-3g.tar.gz
-          tar -xzf ntfs-3g.tar.gz --strip-components=1 -C app/src/main/cpp/ntfs-3g-src
-          rm ntfs-3g.tar.gz
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
-
-      - name: Build Release APK
-        run: gradle :app:assembleRelease --no-daemon --max-workers=2
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: OtgFiles-SamsungUI-APK
-          path: app/build/outputs/apk/release/*.apk
+                  val driver = blockDevice ?:
