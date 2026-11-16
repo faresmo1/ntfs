@@ -20,6 +20,16 @@ jobs:
           cat << 'EOF' > app/src/main/cpp/config.h
           #ifndef NTFS_CONFIG_H
           #define NTFS_CONFIG_H
+          #include <sys/stat.h>
+          #ifndef S_IREAD
+          #define S_IREAD S_IRUSR
+          #endif
+          #ifndef S_IWRITE
+          #define S_IWRITE S_IWUSR
+          #endif
+          #ifndef S_IEXEC
+          #define S_IEXEC S_IXUSR
+          #endif
           #define HAVE_STDINT_H 1
           #define HAVE_STDLIB_H 1
           #define HAVE_STRING_H 1
