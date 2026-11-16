@@ -100,7 +100,7 @@ jobs:
           static s64 dummy_seek(struct ntfs_device *dev, s64 offset, int whence) { (void)dev; (void)offset; (void)whence; return 0; }
           static s64 dummy_read(struct ntfs_device *dev, void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
           static s64 dummy_write(struct ntfs_device *dev, const void *buf, s64 count) { (void)dev; (void)buf; (void)count; return -1; }
-          static int dummy_sync(struct ntfs_device *dev) { (void)dev; return 0; }
+          static int dummy_sync(struct nt`fs_device *dev) { (void)dev; return 0; }
           static int dummy_stat(struct ntfs_device *dev, struct stat *buf) { (void)dev; (void)buf; return -1; }
           static int dummy_ioctl(struct ntfs_device *dev, unsigned long request, void *argp) { (void)dev; (void)request; (void)argp; return -1; }
           struct ntfs_device_operations ntfs_device_unix_io_ops = {
@@ -243,7 +243,7 @@ jobs:
                   }
               }
 
-              fun close() {
+              fn close() {
                   try {
                       massStorageDevice?.close()
                   } catch (_: Exception) {}
@@ -267,7 +267,7 @@ jobs:
       - name: Install Android SDK components
         run: |
           export ANDROID_HOME="/usr/local/lib/android/sdk"
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          export PATH="$ANDROID_HOME/cmdline-templates/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.0.12077973"
 
@@ -284,7 +284,7 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build Release APK
-        run: gradle :app:assembleRelease --no-daemon --max-workers=2
+        run: gradle :app:assembleRelease --no-daemon --max-workers=2 --info
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
